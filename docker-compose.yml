@@ -1,0 +1,39 @@
+services:
+  notification-service:
+    build: .
+    ports:
+      - "8282:8282"
+    environment:
+      SPRING_PROFILES_ACTIVE: postgres
+      SPRING_DATASOURCE_URL: jdbc:postgresql://postgres:5432/notifydb
+      SPRING_DATASOURCE_USERNAME: postgres
+      SPRING_DATASOURCE_PASSWORD: postgres
+    depends_on:
+      postgres:
+        condition: service_healthy
+    networks:
+      - notify-net
+
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_DB: notifydb
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+    ports:
+      - "5433:5432"
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres"]
+      interval: 5s
+      timeout: 3s
+      retries: 5
+    networks:
+      - notify-net
+
+volumes:
+  pgdata:
+
+networks:
+  notify-net:
