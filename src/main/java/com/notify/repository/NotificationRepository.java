@@ -25,6 +25,11 @@ public interface NotificationRepository extends JpaRepository<Notification, Long
 
     Page<Notification> findByChannelOrderByCreatedAtDesc(Channel channel, Pageable pageable);
 
+    @Query("SELECT n FROM Notification n WHERE n.createdAt BETWEEN :from AND :to ORDER BY n.createdAt DESC")
+    Page<Notification> findByDateRange(@Param("from") LocalDateTime from, @Param("to") LocalDateTime to, Pageable pageable);
+
+    Page<Notification> findByChannelAndStatusOrderByCreatedAtDesc(Channel channel, NotificationStatus status, Pageable pageable);
+
     @Query("SELECT n FROM Notification n WHERE n.status = :status AND " +
            "(n.scheduledAt IS NULL OR n.scheduledAt <= :now) " +
            "ORDER BY n.priority DESC, n.createdAt ASC")
