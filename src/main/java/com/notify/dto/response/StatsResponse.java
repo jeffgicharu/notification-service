@@ -18,4 +18,6 @@ public class StatsResponse {
     private Map<String, Long> byChannel;
     private int queueSize;
     private int activeWorkers;
+    private boolean deliveryRateHealthy;
+    private String healthStatus;
 }

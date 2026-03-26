@@ -168,6 +168,9 @@ public class NotificationService {
 
         double rate = last24h > 0 ? (double) delivered24h / last24h * 100 : 0;
 
+        boolean healthy = rate >= 90.0 || last24h == 0;
+        String healthStatus = rate >= 95 ? "EXCELLENT" : rate >= 90 ? "GOOD" : rate >= 75 ? "DEGRADED" : "CRITICAL";
+
         return StatsResponse.builder()
                 .totalNotifications(total)
                 .last24Hours(last24h)
@@ -176,6 +179,8 @@ public class NotificationService {
                 .byStatus(byStatus)
                 .byChannel(byChannel)
                 .queueSize(queue.size())
+                .deliveryRateHealthy(healthy)
+                .healthStatus(healthStatus)
                 .build();
     }
 
