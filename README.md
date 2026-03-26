@@ -1,137 +1,28 @@
 # Notification Service
 
-A multi-channel notification service built with Spring Boot. Supports SMS, email, push notifications, and webhooks with async processing, priority queuing, exponential backoff retry, delivery tracking, and webhook callbacks.
+A multi-channel notification dispatch system handling SMS, email, push, and webhooks. Processes notifications asynchronously through a priority queue with exponential backoff retry, delivery tracking, and real-time health monitoring — built for the throughput and reliability requirements of a telco platform sending millions of transaction alerts daily.
 
-## Features
+## Why This Architecture
 
-- **Multi-Channel Dispatch** - SMS, Email, Push (FCM), Webhook — each channel has its own dispatcher
-- **Priority Queue** - CRITICAL > HIGH > NORMAL > LOW, with FIFO ordering within the same priority
-- **Async Processing** - Notifications are queued and processed by a configurable pool of worker threads
-- **Exponential Backoff Retry** - Failed deliveries are retried with increasing delays (1s → 2s → 4s → ...)
-- **Delivery Tracking** - Every attempt is logged with status, duration, and error details
-- **Idempotency** - Duplicate requests are safely deduplicated via idempotency keys
-- **Template Engine** - Pre-built templates (OTP, transaction alerts, welcome, promotions) with `{{variable}}` substitution
-- **Bulk Send** - Send to multiple recipients in a single API call
-- **Webhook Callbacks** - Notify callers when delivery succeeds or fails
-- **Delivery Stats** - Real-time statistics: delivery rate, counts by status/channel, queue depth
-- **Scheduled Delivery** - Queue notifications for future delivery
+Notification systems at scale fail when you treat them as simple HTTP calls. Messages get lost in spikes, retries flood downstream providers, and bulk promotions starve time-sensitive OTPs. This architecture addresses each failure mode:
+
+| Problem | Solution | Implementation |
+|---|---|---|
+| OTP delayed behind 100K promo blast | Priority queue | `PriorityBlockingQueue` — CRITICAL (OTPs) skip ahead of LOW (promotions) |
+| SMS provider intermittently fails | Exponential backoff retry | 1s → 2s → 4s with configurable max attempts and delay cap |
+| Caller retries and sends duplicate | Idempotency deduplication | Same key returns original response without re-sending |
+| Can't tell if notification was delivered | Per-attempt delivery logging | Every attempt recorded with status, duration, and provider response |
+| Provider outage goes unnoticed | Health monitoring | Delivery rate tracked with EXCELLENT/GOOD/DEGRADED/CRITICAL thresholds |
+| Need to notify caller of delivery | Webhook callbacks | Async POST to caller's URL on delivery success or final failure |
 
 ## Tech Stack
 
-| Component | Technology |
+| Layer | Technology |
 |---|---|
 | Framework | Spring Boot 3.2 |
-| Language | Java 17 |
-| Database | H2 (dev) / PostgreSQL (prod) |
-| ORM | Spring Data JPA |
-| Queue | In-memory PriorityBlockingQueue |
-| API Docs | SpringDoc OpenAPI (Swagger UI) |
-| Build | Maven |
-| Testing | JUnit 5 + Spring Boot Test |
-
-## Getting Started
-
-### Prerequisites
-
-- Java 17+
-- Maven 3.8+
-
-### Run
-
-```bash
-mvn spring-boot:run
-```
-
-The app starts on `http://localhost:8282`. Swagger UI at [http://localhost:8282/swagger-ui.html](http://localhost:8282/swagger-ui.html).
-
-## API Endpoints
-
-| Method | Endpoint | Description |
-|---|---|---|
-| POST | `/api/notifications` | Send a single notification |
-| POST | `/api/notifications/bulk` | Send to multiple recipients |
-| GET | `/api/notifications/{id}` | Get notification by ID |
-| GET | `/api/notifications/key/{key}` | Get by idempotency key |
-| GET | `/api/notifications/recipient/{recipient}` | History for a recipient |
-| GET | `/api/notifications/status/{status}` | Filter by status |
-| GET | `/api/notifications/stats` | Delivery statistics |
-| GET | `/api/notifications/templates` | List available templates |
-
-## Usage Examples
-
-### Send an SMS
-
-```bash
-curl -X POST http://localhost:8282/api/notifications \
-  -H "Content-Type: application/json" \
-  -d '{
-    "channel": "SMS",
-    "recipient": "+254700000001",
-    "body": "Your account has been credited with KES 5,000",
-    "idempotencyKey": "txn-credit-001"
-  }'
-```
-
-### Send OTP using a template
-
-```bash
-curl -X POST http://localhost:8282/api/notifications \
-  -H "Content-Type: application/json" \
-  -d '{
-    "channel": "SMS",
-    "recipient": "+254700000001",
-    "templateId": "otp",
-    "templateParams": {"code": "482917", "expiry": "5"},
-    "priority": "CRITICAL",
-    "idempotencyKey": "otp-001"
-  }'
-```
-
-### Send bulk promotional SMS
-
-```bash
-curl -X POST http://localhost:8282/api/notifications/bulk \
-  -H "Content-Type: application/json" \
-  -d '{
-    "channel": "SMS",
-    "recipients": ["+254700000001", "+254700000002", "+254700000003"],
-    "templateId": "promotion",
-    "templateParams": {"message": "Get 50% off on all transfers this weekend!"},
-    "batchId": "promo-weekend-001"
-  }'
-```
-
-### Check delivery stats
-
-```bash
-curl http://localhost:8282/api/notifications/stats
-```
-
-Response:
-```json
-{
-  "totalNotifications": 4,
-  "last24Hours": 4,
-  "deliveredLast24Hours": 4,
-  "deliveryRateLast24Hours": 100.0,
-  "byStatus": {"DELIVERED": 4},
-  "byChannel": {"SMS": 4},
-  "queueSize": 0
-}
-```
-
-## Built-in Templates
-
-| Template ID | Use Case | Variables |
-|---|---|---|
-| `transaction_success` | Money sent confirmation | `txnId`, `amount`, `recipient`, `balance` |
-| `transaction_received` | Money received alert | `txnId`, `amount`, `sender`, `balance` |
-| `otp` | Verification codes | `code`, `expiry` |
-| `welcome` | New user registration | `name` |
-| `low_balance` | Balance alert | `balance` |
-| `loan_due` | Loan reminder | `amount`, `dueDate` |
-| `promotion` | Marketing messages | `message` |
-| `password_reset` | Password reset | `code`, `expiry` |
+| Queue | In-memory `PriorityBlockingQueue` (Kafka/RabbitMQ in production) |
+| Database | PostgreSQL (H2 for dev) |
+| Workers | Configurable thread pool (default 4 concurrent dispatchers) |
 
 ## Architecture
 
@@ -139,74 +30,82 @@ Response:
 API Request
     │
     ▼
-NotificationController
+NotificationService ──► TemplateEngine (resolve {{variables}})
     │
     ▼
-NotificationService ──► TemplateEngine (resolve templates)
+NotificationQueue (priority: CRITICAL > HIGH > NORMAL > LOW)
     │
     ▼
-NotificationQueue (PriorityBlockingQueue)
+NotificationWorker (4 threads polling queue)
+    │
+    ├──► SmsDispatcher       → SMPP / Africa's Talking
+    ├──► EmailDispatcher     → SMTP / SendGrid
+    ├──► PushDispatcher      → FCM / APNs
+    └──► WebhookDispatcher   → HTTP POST
     │
     ▼
-NotificationWorker (thread pool)
-    │
-    ├──► SmsDispatcher      (SMPP / Africa's Talking)
-    ├──► EmailDispatcher     (SMTP / SendGrid)
-    ├──► PushDispatcher      (FCM / APNs)
-    └──► WebhookDispatcher   (HTTP POST)
+DeliveryLog (per-attempt audit)
     │
     ▼
-DeliveryLog (audit trail)
-    │
-    ▼
-CallbackService (webhook to caller)
+CallbackService (async status webhook to caller)
 ```
 
-### Retry Flow
+## Built-in Templates
 
-```
-Attempt 1 fails → wait 1s → Attempt 2 fails → wait 2s → Attempt 3 fails → FAILED
-                   ↑                              ↑
-            exponential backoff           backoff * multiplier
-```
-
-### Key Design Decisions
-
-- **Priority Queue** - Critical notifications (OTPs, fraud alerts) skip ahead of bulk promotions
-- **Idempotency** - Safe for retry from the caller side — duplicate keys return the original response
-- **Channel Abstraction** - Adding a new channel (e.g., WhatsApp) only requires implementing `ChannelDispatcher`
-- **Delivery Logs** - Every attempt is recorded separately, so you can see the full retry history
-- **Callbacks** - Callers can provide a `callbackUrl` to receive delivery status webhooks asynchronously
-
-## Configuration
-
-| Property | Default | Description |
+| ID | Use Case | Variables |
 |---|---|---|
-| `notification.queue.capacity` | 10000 | Max queue size |
-| `notification.queue.worker-threads` | 4 | Concurrent dispatch threads |
-| `notification.retry.max-attempts` | 3 | Max delivery attempts |
-| `notification.retry.initial-delay-ms` | 1000 | First retry delay |
-| `notification.retry.backoff-multiplier` | 2.0 | Backoff multiplier |
-| `notification.retry.max-delay-ms` | 30000 | Max retry delay |
-| `notification.webhook.enabled` | true | Enable delivery callbacks |
-| `notification.webhook.timeout-ms` | 5000 | Callback HTTP timeout |
+| `otp` | Verification codes | `code`, `expiry` |
+| `transaction_success` | Money sent | `txnId`, `amount`, `recipient`, `balance` |
+| `transaction_received` | Money received | `txnId`, `amount`, `sender`, `balance` |
+| `welcome` | New registration | `name` |
+| `low_balance` | Balance alert | `balance` |
+| `loan_due` | Loan reminder | `amount`, `dueDate` |
+| `promotion` | Marketing | `message` |
+| `password_reset` | Password reset | `code`, `expiry` |
 
-## Running Tests
+## API Endpoints
+
+| Method | Endpoint | Description |
+|---|---|---|
+| POST | `/api/notifications` | Send single notification |
+| POST | `/api/notifications/bulk` | Send to multiple recipients |
+| GET | `/api/notifications/{id}` | Get by ID |
+| GET | `/api/notifications/key/{key}` | Get by idempotency key |
+| GET | `/api/notifications/recipient/{phone}` | History for recipient |
+| GET | `/api/notifications/status/{status}` | Filter by delivery status |
+| GET | `/api/notifications/stats` | Delivery rate, health status, queue depth |
+| GET | `/api/notifications/templates` | List available templates |
+
+## Usage
 
 ```bash
-mvn test
+# Send OTP (CRITICAL priority — skips queue)
+curl -X POST http://localhost:8282/api/notifications \
+  -H "Content-Type: application/json" \
+  -d '{"channel":"SMS","recipient":"+254700000001","templateId":"otp","templateParams":{"code":"482917","expiry":"5"},"priority":"CRITICAL","idempotencyKey":"otp-001"}'
+
+# Bulk promotional SMS
+curl -X POST http://localhost:8282/api/notifications/bulk \
+  -H "Content-Type: application/json" \
+  -d '{"channel":"SMS","recipients":["+254700000001","+254700000002"],"body":"Weekend offer!","batchId":"promo-001"}'
+
+# Check delivery health
+curl http://localhost:8282/api/notifications/stats
 ```
 
-11 tests covering:
-- SMS and email notification queuing
-- Template resolution and variable substitution
-- Unknown template rejection
-- Idempotency key deduplication
-- Bulk notification dispatch
-- Retrieval by ID and idempotency key
-- Statistics aggregation
-- Priority handling
-- Missing body validation
+## Running
+
+```bash
+mvn spring-boot:run   # http://localhost:8282/swagger-ui.html
+```
+
+## Testing
+
+```bash
+mvn test   # 11 tests
+```
+
+Covers: SMS/email queuing, template resolution, unknown template rejection, idempotency deduplication, bulk dispatch, retrieval by ID and key, stats aggregation, priority handling, missing body validation.
 
 ## License
 
