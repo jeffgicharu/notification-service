@@ -199,8 +199,17 @@ public class NotificationWorker {
     }
 
     private void recoverStuck() {
-        // Find notifications stuck in PROCESSING for more than 5 minutes
-        // In production, this would use a database query
-        log.debug("Checking for stuck notifications...");
+        LocalDateTime cutoff = LocalDateTime.now().minusMinutes(5);
+        List<Notification> stuck = notificationRepository.findStuckProcessing(cutoff);
+        for (Notification n : stuck) {
+            n.setStatus(NotificationStatus.QUEUED);
+            n.setLastError("Recovered from stuck PROCESSING state");
+            notificationRepository.save(n);
+            queue.enqueue(n);
+            log.warn("Recovered stuck notification {} (was PROCESSING since {})", n.getId(), n.getProcessedAt());
+        }
+        if (!stuck.isEmpty()) {
+            log.info("Recovered {} stuck notifications", stuck.size());
+        }
     }
 }

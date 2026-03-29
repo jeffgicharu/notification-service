@@ -95,4 +95,40 @@ public class NotificationController {
         return ResponseEntity.ok(
                 ApiResponse.success("Templates retrieved", templateEngine.getAll()));
     }
+
+    @GetMapping("/{id}/delivery-logs")
+    @Operation(summary = "Get delivery attempt logs for a notification")
+    public ResponseEntity<ApiResponse<List<com.notify.entity.DeliveryLog>>> getDeliveryLogs(@PathVariable Long id) {
+        return ResponseEntity.ok(ApiResponse.success("Delivery logs",
+                notificationService.getDeliveryLogs(id)));
+    }
+
+    @PostMapping("/{id}/cancel")
+    @Operation(summary = "Cancel a queued notification")
+    public ResponseEntity<ApiResponse<NotificationResponse>> cancel(@PathVariable Long id) {
+        return ResponseEntity.ok(ApiResponse.success("Notification cancelled",
+                notificationService.cancel(id)));
+    }
+
+    @PostMapping("/{id}/resend")
+    @Operation(summary = "Resend a failed notification")
+    public ResponseEntity<ApiResponse<NotificationResponse>> resend(@PathVariable Long id) {
+        return ResponseEntity.ok(ApiResponse.success("Notification re-queued",
+                notificationService.resend(id)));
+    }
+
+    @GetMapping("/channels/health")
+    @Operation(summary = "Delivery health per channel")
+    public ResponseEntity<ApiResponse<Map<String, Object>>> channelHealth() {
+        return ResponseEntity.ok(ApiResponse.success("Channel health",
+                notificationService.getChannelHealth()));
+    }
+
+    @GetMapping("/scheduled")
+    @Operation(summary = "List pending scheduled notifications")
+    public ResponseEntity<ApiResponse<Page<NotificationResponse>>> getScheduled(
+            @PageableDefault(size = 20) Pageable pageable) {
+        return ResponseEntity.ok(ApiResponse.success("Scheduled notifications",
+                notificationService.getScheduled(pageable)));
+    }
 }

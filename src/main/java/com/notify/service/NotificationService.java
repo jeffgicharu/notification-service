@@ -2,7 +2,9 @@ package com.notify.service;
 
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
+import com.notify.entity.DeliveryLog;
 import com.notify.dto.request.BulkNotificationRequest;
+import com.notify.repository.DeliveryLogRepository;
 import com.notify.dto.request.SendNotificationRequest;
 import com.notify.dto.response.NotificationResponse;
 import com.notify.dto.response.StatsResponse;
@@ -30,6 +32,7 @@ import java.util.stream.Collectors;
 public class NotificationService {
 
     private final NotificationRepository notificationRepository;
+    private final DeliveryLogRepository deliveryLogRepository;
     private final NotificationQueue queue;
     private final TemplateEngine templateEngine;
     private final ObjectMapper objectMapper;
@@ -39,6 +42,12 @@ public class NotificationService {
 
     @Transactional
     public NotificationResponse send(SendNotificationRequest request) {
+        // Recipient rate limit check
+        if (isRecipientRateLimited(request.getRecipient())) {
+            throw new IllegalStateException("Recipient " + request.getRecipient()
+                    + " has exceeded the limit of " + MAX_PER_RECIPIENT_PER_HOUR + " notifications per hour");
+        }
+
         // Idempotency check
         Optional<Notification> existing = notificationRepository
                 .findByIdempotencyKey(request.getIdempotencyKey());
@@ -182,6 +191,82 @@ public class NotificationService {
                 .deliveryRateHealthy(healthy)
                 .healthStatus(healthStatus)
                 .build();
+    }
+
+    // ─── DELIVERY LOGS ───────────────────────────────────────────────
+
+    public List<DeliveryLog> getDeliveryLogs(Long notificationId) {
+        return deliveryLogRepository.findByNotificationIdOrderByCreatedAtDesc(notificationId);
+    }
+
+    // ─── CANCEL AND RESEND ──────────────────────────────────────────
+
+    @Transactional
+    public NotificationResponse cancel(Long notificationId) {
+        Notification n = notificationRepository.findById(notificationId)
+                .orElseThrow(() -> new IllegalArgumentException("Notification not found: " + notificationId));
+        if (n.getStatus() != NotificationStatus.QUEUED && n.getStatus() != NotificationStatus.RETRYING) {
+            throw new IllegalStateException("Only QUEUED or RETRYING notifications can be cancelled. Current: " + n.getStatus());
+        }
+        n.setStatus(NotificationStatus.FAILED);
+        n.setLastError("Cancelled by user");
+        notificationRepository.save(n);
+        log.info("Notification {} cancelled", notificationId);
+        return toResponse(n);
+    }
+
+    @Transactional
+    public NotificationResponse resend(Long notificationId) {
+        Notification n = notificationRepository.findById(notificationId)
+                .orElseThrow(() -> new IllegalArgumentException("Notification not found: " + notificationId));
+        if (n.getStatus() != NotificationStatus.FAILED) {
+            throw new IllegalStateException("Only FAILED notifications can be resent. Current: " + n.getStatus());
+        }
+        n.setStatus(NotificationStatus.QUEUED);
+        n.setAttemptCount(0);
+        n.setLastError(null);
+        notificationRepository.save(n);
+        queue.enqueue(n);
+        log.info("Notification {} re-queued for delivery", notificationId);
+        return toResponse(n);
+    }
+
+    // ─── RATE LIMITING ──────────────────────────────────────────────
+
+    private static final int MAX_PER_RECIPIENT_PER_HOUR = 10;
+
+    public boolean isRecipientRateLimited(String recipient) {
+        long count = notificationRepository.countByRecipientSince(
+                recipient, LocalDateTime.now().minusHours(1));
+        return count >= MAX_PER_RECIPIENT_PER_HOUR;
+    }
+
+    // ─── CHANNEL HEALTH ─────────────────────────────────────────────
+
+    public Map<String, Object> getChannelHealth() {
+        Map<String, Object> health = new LinkedHashMap<>();
+        for (var channel : com.notify.enums.Channel.values()) {
+            Page<Notification> recent = notificationRepository.findByChannelOrderByCreatedAtDesc(
+                    channel, org.springframework.data.domain.PageRequest.of(0, 100));
+            long total = recent.getTotalElements();
+            long delivered = recent.getContent().stream()
+                    .filter(n -> n.getStatus() == NotificationStatus.DELIVERED).count();
+            long failed = recent.getContent().stream()
+                    .filter(n -> n.getStatus() == NotificationStatus.FAILED).count();
+            double rate = total > 0 ? (double) delivered / total * 100 : 0;
+            String status = rate >= 95 ? "HEALTHY" : rate >= 80 ? "DEGRADED" : total == 0 ? "NO_DATA" : "CRITICAL";
+            health.put(channel.name(), Map.of(
+                    "total", total, "delivered", delivered, "failed", failed,
+                    "deliveryRate", Math.round(rate * 100.0) / 100.0, "status", status));
+        }
+        return health;
+    }
+
+    // ─── SCHEDULED ──────────────────────────────────────────────────
+
+    public Page<NotificationResponse> getScheduled(Pageable pageable) {
+        return notificationRepository.findByStatusAndScheduledAtIsNotNullOrderByScheduledAtAsc(
+                NotificationStatus.QUEUED, pageable).map(this::toResponse);
     }
 
     private NotificationResponse toResponse(Notification n) {

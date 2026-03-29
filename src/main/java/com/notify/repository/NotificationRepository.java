@@ -49,4 +49,14 @@ public interface NotificationRepository extends JpaRepository<Notification, Long
 
     @Query("SELECT COUNT(n) FROM Notification n WHERE n.status = 'DELIVERED' AND n.createdAt >= :since")
     long countDeliveredSince(@Param("since") LocalDateTime since);
+
+    @Query("SELECT n FROM Notification n WHERE n.status = 'PROCESSING' AND n.processedAt < :cutoff")
+    List<Notification> findStuckProcessing(@Param("cutoff") LocalDateTime cutoff);
+
+    @Query("SELECT COUNT(n) FROM Notification n WHERE n.recipient = :recipient AND n.createdAt >= :since")
+    long countByRecipientSince(@Param("recipient") String recipient, @Param("since") LocalDateTime since);
+
+    List<Notification> findByStatusAndScheduledAtBeforeOrderByPriorityDesc(NotificationStatus status, LocalDateTime before);
+
+    Page<Notification> findByStatusAndScheduledAtIsNotNullOrderByScheduledAtAsc(NotificationStatus status, Pageable pageable);
 }
